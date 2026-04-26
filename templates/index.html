@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SecHeaders · Audit</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+  <!-- ── NAV ───────────────────────────────────── -->
+  <nav class="navbar">
+    <div class="nav-inner">
+      <div class="nav-brand">
+        <div class="nav-icon">🛡️</div>
+        <div>
+          <div class="nav-title">SecHeaders<span class="accent">.</span>audit</div>
+          <div class="nav-sub">HTTP Security Header Analyzer</div>
+        </div>
+      </div>
+      <div class="nav-badges">
+        <span class="badge">Flask</span>
+        <span class="badge">Claude AI</span>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ── HERO ──────────────────────────────────── -->
+  <section class="hero">
+    <div class="hero-inner">
+      <h1 class="hero-title">Audit Your Security<br/><span class="accent">Headers Instantly</span></h1>
+      <p class="hero-sub">Paste raw HTTP headers or fetch a live URL. Get an AI-powered security grade, per-header analysis, and actionable recommendations.</p>
+      <div class="hero-stats">
+        <div class="hstat"><strong>10</strong><span>Headers Checked</span></div>
+        <div class="hstat"><strong>A–F</strong><span>Security Grade</span></div>
+        <div class="hstat"><strong>AI</strong><span>Powered Analysis</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── MAIN ──────────────────────────────────── -->
+  <main class="main">
+
+    <!-- Input Card -->
+    <div class="card" id="input-card">
+      <div class="tabs">
+        <button class="tab active" id="tab-url" onclick="switchTab('url')">🔗 Fetch by URL</button>
+        <button class="tab"        id="tab-paste" onclick="switchTab('paste')">📋 Paste Headers</button>
+      </div>
+
+      <!-- URL mode -->
+      <div id="url-mode">
+        <label class="field-label">Target URL</label>
+        <div class="input-row">
+          <input id="url-input" type="text" placeholder="https://example.com" autocomplete="off" />
+          <button class="btn-secondary" onclick="fetchHeaders()">Fetch</button>
+        </div>
+        <p class="field-hint">Fetches live headers server-side — no CORS restrictions.</p>
+      </div>
+
+      <!-- Paste mode -->
+      <div id="paste-mode" style="display:none">
+        <label class="field-label">Raw HTTP Response Headers</label>
+        <textarea id="headers-input" rows="9" placeholder="content-type: text/html; charset=utf-8
+server: nginx/1.22.0
+x-frame-options: SAMEORIGIN
+x-content-type-options: nosniff
+strict-transport-security: max-age=31536000
+cache-control: no-store"></textarea>
+        <p class="field-hint">Copy from browser DevTools → Network tab → any request → Response Headers.</p>
+      </div>
+
+      <div id="fetch-status" class="fetch-status" style="display:none"></div>
+      <div id="error-box" class="error-box" style="display:none"></div>
+
+      <button class="btn-primary" id="analyze-btn" onclick="analyze()">
+        <span id="btn-text">Analyze Security Headers →</span>
+        <span id="btn-loader" style="display:none">⟳ Analyzing…</span>
+      </button>
+    </div>
+
+    <!-- Results (hidden until analysis) -->
+    <div id="results" style="display:none">
+
+      <!-- Score Banner -->
+      <div class="score-banner" id="score-banner">
+        <div class="score-ring-wrap">
+          <svg class="score-svg" viewBox="0 0 140 140">
+            <circle cx="70" cy="70" r="54" fill="none" stroke="#1e2535" stroke-width="10"/>
+            <circle id="score-arc" cx="70" cy="70" r="54" fill="none"
+              stroke="#00c896" stroke-width="10" stroke-linecap="round"
+              stroke-dasharray="0 339.3" transform="rotate(-90 70 70)"
+              style="transition: stroke-dasharray 1.2s cubic-bezier(.4,0,.2,1), stroke 0.4s"/>
+          </svg>
+          <div class="score-center">
+            <span id="grade-letter">A</span>
+            <small id="score-num">–/100</small>
+          </div>
+        </div>
+
+        <div class="score-meta">
+          <div class="grade-word" id="grade-word">–</div>
+          <p class="summary-text" id="summary-text"></p>
+          <div class="score-stats">
+            <div class="sstat green"><strong id="stat-present">0</strong><span>Present</span></div>
+            <div class="sstat red"><strong id="stat-missing">0</strong><span>Missing</span></div>
+            <div class="sstat orange"><strong id="stat-critical">0</strong><span>Critical Missing</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recommendations -->
+      <div class="recs-card" id="recs-card">
+        <h3 class="section-heading">🔧 Top Recommendations</h3>
+        <ol id="recs-list" class="recs-list"></ol>
+      </div>
+
+      <!-- Header breakdown -->
+      <h3 class="section-heading" style="margin-bottom:12px">Header Details <span class="section-hint">— click any row to expand</span></h3>
+      <div id="header-list"></div>
+
+      <!-- Footer note -->
+      <p class="footer-note">Analysis powered by Claude AI · Results are advisory only · Always consult a security professional for production systems.</p>
+    </div>
+
+  </main>
+
+  <script>
+    // ── State ─────────────────────────────────────
+    let currentTab = 'url';
+
+    const GRADE_COLORS = { A:'#00c896', B:'#7ecb57', C:'#f0b429', D:'#f07229', F:'#e84545' };
+    const GRADE_LABELS = { A:'Excellent', B:'Good', C:'Fair', D:'Poor', F:'Critical' };
+    const CRITICAL = ['Content-Security-Policy','Strict-Transport-Security','X-Frame-Options'];
+    const CIRC = 2 * Math.PI * 54;
+
+    function scoreToGrade(s){ return s>=90?'A':s>=75?'B':s>=55?'C':s>=35?'D':'F'; }
+
+    // ── Tab switching ─────────────────────────────
+    function switchTab(tab) {
+      currentTab = tab;
+      document.getElementById('url-mode').style.display   = tab==='url'   ? 'block' : 'none';
+      document.getElementById('paste-mode').style.display = tab==='paste' ? 'block' : 'none';
+      document.getElementById('tab-url').classList.toggle('active',   tab==='url');
+      document.getElementById('tab-paste').classList.toggle('active', tab==='paste');
+      clearMessages();
+    }
+
+    function clearMessages() {
+      hide('error-box');
+      hide('fetch-status');
+    }
+
+    function showError(msg) {
+      const el = document.getElementById('error-box');
+      el.textContent = '⚠ ' + msg;
+      el.style.display = 'block';
+    }
+
+    function showStatus(msg, type='info') {
+      const el = document.getElementById('fetch-status');
+      el.textContent = msg;
+      el.className = 'fetch-status ' + type;
+      el.style.display = 'block';
+    }
+
+    function hide(id){ document.getElementById(id).style.display = 'none'; }
+
+    // ── Fetch headers from URL ────────────────────
+    async function fetchHeaders() {
+      const url = document.getElementById('url-input').value.trim();
+      if (!url) { showError('Please enter a URL.'); return; }
+      clearMessages();
+      showStatus('⟳ Fetching headers…', 'info');
+
+      try {
+        const res = await fetch('/fetch-headers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+        const data = await res.json();
+        if (data.error) { showError(data.error); hide('fetch-status'); return; }
+
+        switchTab('paste');
+        document.getElementById('headers-input').value = data.headers;
+        showStatus(`✓ Fetched ${data.status} from ${data.url}`, 'success');
+      } catch (e) {
+        showError('Network error — is the Flask server running?');
+        hide('fetch-status');
+      }
+    }
+
+    // ── Analyze headers ───────────────────────────
+    async function analyze() {
+      let headers = '';
+      if (currentTab === 'paste') {
+        headers = document.getElementById('headers-input').value.trim();
+      } else {
+        // auto-fetch first then analyze
+        await fetchHeaders();
+        headers = document.getElementById('headers-input').value.trim();
+      }
+      if (!headers) { showError('No headers to analyze.'); return; }
+
+      clearMessages();
+      setLoading(true);
+
+      try {
+        const res = await fetch('/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ headers })
+        });
+        const data = await res.json();
+        if (data.error) { showError(data.error); setLoading(false); return; }
+        renderResults(data.result);
+      } catch(e) {
+        showError('Failed to connect to server.');
+      }
+      setLoading(false);
+    }
+
+    function setLoading(on) {
+      document.getElementById('analyze-btn').disabled = on;
+      document.getElementById('btn-text').style.display   = on ? 'none'  : 'inline';
+      document.getElementById('btn-loader').style.display = on ? 'inline': 'none';
+    }
+
+    // ── Render results ────────────────────────────
+    function renderResults(r) {
+      const grade = scoreToGrade(r.score);
+      const color = GRADE_COLORS[grade];
+
+      // Score ring
+      const dash = (r.score / 100) * CIRC;
+      const arc = document.getElementById('score-arc');
+      arc.setAttribute('stroke-dasharray', `${dash} ${CIRC}`);
+      arc.setAttribute('stroke', color);
+
+      document.getElementById('grade-letter').textContent = grade;
+      document.getElementById('grade-letter').style.color = color;
+      document.getElementById('score-num').textContent = r.score + '/100';
+      document.getElementById('grade-word').textContent = GRADE_LABELS[grade];
+      document.getElementById('grade-word').style.color = color;
+      document.getElementById('summary-text').textContent = r.summary;
+      document.getElementById('score-banner').style.borderColor = color + '44';
+
+      const present  = Object.values(r.headers).filter(h=>h.present).length;
+      const missing  = 10 - present;
+      const critical = CRITICAL.filter(n => r.headers[n] && !r.headers[n].present).length;
+      document.getElementById('stat-present').textContent  = present;
+      document.getElementById('stat-missing').textContent  = missing;
+      document.getElementById('stat-critical').textContent = critical;
+
+      // Recommendations
+      const recsList = document.getElementById('recs-list');
+      recsList.innerHTML = (r.recommendations || [])
+        .map(rec => `<li>${escHtml(rec)}</li>`).join('');
+
+      // Header rows
+      const headerList = document.getElementById('header-list');
+      headerList.innerHTML = Object.entries(r.headers).map(([name, d], i) => {
+        const abbr = name.split('-').map(w=>w[0]).join('').slice(0,4);
+        const isCrit = CRITICAL.includes(name);
+        return `
+        <div class="hrow ${d.present?'hrow-present':'hrow-missing'}"
+             style="animation-delay:${i*0.05}s"
+             onclick="this.classList.toggle('hrow-open')">
+          <div class="hrow-top">
+            <span class="dot ${d.present?'dot-green':'dot-red'}"></span>
+            <span class="habbr ${d.present?'habbr-present':'habbr-missing'}">${escHtml(abbr)}</span>
+            <span class="hname">${escHtml(name)}</span>
+            ${isCrit ? '<span class="crit-badge">CRITICAL</span>' : ''}
+            <span class="chevron">⌄</span>
+          </div>
+          <div class="hrow-detail">
+            ${d.value
+              ? `<code class="hvalue">${escHtml(d.value)}</code>`
+              : `<div class="hmissing-note">✗ Header not present</div>`}
+            ${d.analysis
+              ? `<div class="hanalysis"><span class="alabel">Analysis · </span>${escHtml(d.analysis)}</div>`
+              : ''}
+          </div>
+        </div>`;
+      }).join('');
+
+      document.getElementById('results').style.display = 'block';
+      document.getElementById('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function escHtml(s) {
+      if (!s) return '';
+      return String(s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // Enter key support
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('url-input').addEventListener('keydown', e => {
+        if (e.key === 'Enter') analyze();
+      });
+    });
+  </script>
+</body>
+</html>
